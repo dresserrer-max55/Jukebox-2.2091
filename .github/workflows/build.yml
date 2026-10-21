@@ -1,0 +1,40 @@
+name: Build Jukebox 2.2091 (Android64)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "**"
+
+jobs:
+  build:
+    name: Android64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Unzip project
+        run: |
+          rm -rf jukebox_src
+          mkdir jukebox_src
+          unzip -q -o Jukebox_2.2091.zip -d jukebox_src
+          test -f jukebox_src/mod.json || (echo "::error::No se encontro mod.json dentro del zip" && exit 1)
+
+      - name: Build
+        id: build
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          path: ./jukebox_src
+          sdk: "given"
+          target: Android64
+          ccache-variant: ccache
+          build-config: Release
+          configure-args: -DGEODE_GD_VERSION=2.2091 -DGEODE_COMP_GD_VERSION=22091
+
+      - name: Upload .geode
+        uses: actions/upload-artifact@v4
+        with:
+          name: jukebox-android64-2.2091
+          path: ${{ steps.build.outputs.build-output }}/*.geode
+          
