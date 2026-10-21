@@ -6,6 +6,13 @@ on:
     branches:
       - "**"
 
+env:
+  GD_VERSION: "2.2091"
+  GD_COMP_VERSION: "22091"
+  GEODE_VERSION: "5.11.2"
+  # commit de los bindings que ya tiene 2.2091 pero es anterior al cambio que rompe el SDK 5.11.2
+  BINDINGS_REF: "4dfba181"
+
 jobs:
   build:
     name: Android64
@@ -21,20 +28,61 @@ jobs:
           unzip -q -o Jukebox_2.2091.zip -d jukebox_src
           test -f jukebox_src/mod.json || (echo "::error::No se encontro mod.json dentro del zip" && exit 1)
 
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Setup Geode CLI
+        uses: geode-sdk/cli/.github/actions/setup@main
+
+      - name: Setup Geode SDK
+        run: |
+          export CLI_PROFILE="$GITHUB_WORKSPACE/cli-profile"
+          mkdir -p "$CLI_PROFILE/geode/mods"
+          geode profile add --name GithubActions "$CLI_PROFILE/GeometryDash.exe" win
+          geode sdk install "$GITHUB_WORKSPACE/geode-sdk-clone"
+          export GEODE_SDK="$GITHUB_WORKSPACE/geode-sdk-clone"
+          echo "GEODE_SDK=$GEODE_SDK" >> $GITHUB_ENV
+          geode sdk update "$GEODE_VERSION"
+          geode sdk install-binaries --platform android64 --version "$GEODE_VERSION"
+          echo "CPM_SOURCE_CACHE=$GITHUB_WORKSPACE/cpm-cache" >> $GITHUB_ENV
+
+      - name: Download bindings (2.2091)
+        run: |
+          git clone https://github.com/geode-sdk/bindings bindings-repo
+          git -C bindings-repo checkout "$BINDINGS_REF"
+          ls bindings-repo/bindings | tr '\n' ' '
+          test -d bindings-repo/bindings/2.2091 || (echo "::error::Estos bindings no tienen 2.2091" && exit 1)
+          echo "GEODE_BINDINGS_REPO_PATH=$GITHUB_WORKSPACE/bindings-repo" >> $GITHUB_ENV
+
+      - name: Patch SDK headers (scrollWheel bool, como en los bindings 2.2091)
+        run: |
+          H="$GEODE_SDK/loader/include/Geode"
+          sed -i 's/virtual void scrollWheel(float y, float x) {}/virtual bool scrollWheel(float y, float x) { return false; }/' "$H/cocos/robtop/mouse_dispatcher/CCMouseDelegate.h"
+          sed -i 's/void scrollWheel(float y, float\( x\)\?) override;/bool scrollWheel(float y, float x) override;/' "$H/ui/ScrollLayer.hpp" "$H/ui/Scrollbar.hpp"
+          grep -rn "scrollWheel" "$H/cocos/robtop/mouse_dispatcher/CCMouseDelegate.h" "$H/ui/ScrollLayer.hpp" "$H/ui/Scrollbar.hpp"
+
       - name: Build
-        id: build
-        uses: geode-sdk/build-geode-mod@main
-        with:
-          path: ./jukebox_src
-          sdk: "given"
-          target: Android64
-          ccache-variant: ccache
-          build-config: Release
-          configure-args: -DGEODE_GD_VERSION=2.2091 -DGEODE_COMP_GD_VERSION=22091
+        run: |
+          NDK_PATH=/usr/local/lib/android/sdk/ndk/29.0.14206865
+          if [ ! -d "$NDK_PATH" ]; then NDK_PATH="$ANDROID_NDK_LATEST_HOME"; fi
+          cd jukebox_src
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DGEODE_CODEGEN_CMAKE_ARGS="-DCMAKE_C_COMPILER=clang;-DCMAKE_CXX_COMPILER=clang++;-G Ninja" \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=$NDK_PATH/build/cmake/android.toolchain.cmake \
+            -DANDROID_STL=c++_shared -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-23 \
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+            -DGEODE_DONT_INSTALL_MODS=ON -DGEODE_TARGET_PLATFORM=Android64 \
+            -DGEODE_GD_VERSION=$GD_VERSION -DGEODE_COMP_GD_VERSION=$GD_COMP_VERSION
+          cmake --build build --config Release --parallel
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          find ./build -name "*.geode" -exec cp {} "$GITHUB_WORKSPACE/output/" \;
+          ls -la "$GITHUB_WORKSPACE/output"
 
       - name: Upload .geode
         uses: actions/upload-artifact@v4
         with:
           name: jukebox-android64-2.2091
-          path: ${{ steps.build.outputs.build-output }}/*.geode
+          path: output/*.geode
           
